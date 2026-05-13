@@ -433,6 +433,8 @@ func (s *Service) ensureExecutorsForAuthWithMode(a *coreauth.Auth, forceReplace 
 		s.coreManager.RegisterExecutor(executor.NewClaudeExecutor(s.cfg))
 	case "kimi":
 		s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	case "fireworks":
+		s.coreManager.RegisterExecutor(executor.NewFireworksExecutor(s.cfg))
 	default:
 		providerKey := strings.ToLower(strings.TrimSpace(a.Provider))
 		if providerKey == "" {
@@ -586,6 +588,7 @@ func (s *Service) registerHomeExecutors() {
 	s.coreManager.RegisterExecutor(executor.NewAIStudioExecutor(s.cfg, "", s.wsGateway))
 	s.coreManager.RegisterExecutor(executor.NewAntigravityExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewKimiExecutor(s.cfg))
+	s.coreManager.RegisterExecutor(executor.NewFireworksExecutor(s.cfg))
 	s.coreManager.RegisterExecutor(executor.NewOpenAICompatExecutor("openai-compatibility", s.cfg))
 }
 
@@ -1152,6 +1155,39 @@ func (s *Service) registerModelsForAuth(a *coreauth.Auth) {
 		models = applyExcludedModels(models, excluded)
 	case "kimi":
 		models = registry.GetKimiModels()
+		models = applyExcludedModels(models, excluded)
+	case "fireworks":
+		fe := executor.NewFireworksExecutor(s.cfg)
+		models = fe.FetchModels(a)
+		if a.Metadata != nil {
+			if rawModels, ok := a.Metadata["models"]; ok {
+				if modelList, isList := rawModels.([]any); isList {
+					existing := make(map[string]struct{}, len(models))
+					for _, m := range models {
+						existing[m.ID] = struct{}{}
+					}
+					for _, item := range modelList {
+						modelID, isStr := item.(string)
+						if !isStr || strings.TrimSpace(modelID) == "" {
+							continue
+						}
+						modelID = strings.TrimSpace(modelID)
+						if _, ok := existing[modelID]; ok {
+							continue
+						}
+						models = append(models, &ModelInfo{
+							ID:          modelID,
+							Object:      "model",
+							Created:     time.Now().Unix(),
+							OwnedBy:     "fireworks",
+							Type:        "fireworks",
+							DisplayName: modelID,
+							UserDefined: true,
+						})
+					}
+				}
+			}
+		}
 		models = applyExcludedModels(models, excluded)
 	default:
 		// Handle OpenAI-compatibility providers by name using config
