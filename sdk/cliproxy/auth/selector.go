@@ -938,6 +938,8 @@ type SessionAffinitySelector struct {
 	matcher           *cliproxysession.MerklePrefixMatcher
 	subagentAffinity  bool
 	rebindOnQuotaOnly bool
+	// maxSessionsPerAuth bounds new session bindings per credential. Zero disables the cap.
+	maxSessionsPerAuth int
 }
 
 const (
@@ -1073,10 +1075,14 @@ func (s *SessionAffinitySelector) shouldPreserveBindingWhenUnavailable(ctx conte
 
 // SessionAffinityConfig configures the session affinity selector.
 type SessionAffinityConfig struct {
-	Fallback         Selector
-	TTL              time.Duration
-	SubagentAffinity *bool
-	RebindOn         string
+	Fallback Selector
+	TTL      time.Duration
+	// MaxSessionsPerAuth bounds how many distinct root sessions may be bound to one
+	// credential. New sessions avoid credentials at the cap; existing bindings are kept.
+	// Zero or negative disables the cap.
+	MaxSessionsPerAuth int
+	SubagentAffinity   *bool
+	RebindOn           string
 }
 
 // NewSessionAffinitySelector creates a new session-aware selector.
@@ -1100,13 +1106,40 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 		subagentAffinity = *cfg.SubagentAffinity
 	}
 	rebindOnQuotaOnly := normalizeSessionAffinityRebindOn(cfg.RebindOn) == SessionAffinityRebindOnQuota
-	return &SessionAffinitySelector{
-		fallback:          cfg.Fallback,
-		cache:             NewSessionCache(cfg.TTL),
-		matcher:           cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
-		subagentAffinity:  subagentAffinity,
-		rebindOnQuotaOnly: rebindOnQuotaOnly,
+	maxSessionsPerAuth := cfg.MaxSessionsPerAuth
+	if maxSessionsPerAuth < 0 {
+		maxSessionsPerAuth = 0
 	}
+	return &SessionAffinitySelector{
+		fallback:           cfg.Fallback,
+		cache:              NewSessionCache(cfg.TTL),
+		matcher:            cliproxysession.NewMerklePrefixMatcher(cfg.TTL),
+		subagentAffinity:   subagentAffinity,
+		rebindOnQuotaOnly:  rebindOnQuotaOnly,
+		maxSessionsPerAuth: maxSessionsPerAuth,
+	}
+}
+
+// capFilteredAuths drops credentials whose live session count reached the configured cap.
+// It returns the input unchanged when the cap is disabled or when every candidate is
+// saturated, so a capped pool degrades to normal selection instead of failing requests.
+func (s *SessionAffinitySelector) capFilteredAuths(auths []*Auth) []*Auth {
+	if s == nil || s.cache == nil || s.maxSessionsPerAuth <= 0 || len(auths) == 0 {
+		return auths
+	}
+	under := make([]*Auth, 0, len(auths))
+	for _, auth := range auths {
+		if auth == nil {
+			continue
+		}
+		if s.cache.ActiveCount(auth.ID) < s.maxSessionsPerAuth {
+			under = append(under, auth)
+		}
+	}
+	if len(under) == 0 {
+		return auths
+	}
+	return under
 }
 
 // Trees returns a backward-compatible in-memory session tree store.
@@ -1192,6 +1225,8 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return nil, err
 	}
 	fallbackAuths := highestPriorityAuths(available)
+	// New bindings avoid credentials that already reached the per-auth session cap.
+	coldFallbackAuths := s.capFilteredAuths(fallbackAuths)
 
 	modelKey := canonicalModelKey(model)
 	cacheKey := provider + "::" + primaryID + "::" + modelKey
@@ -1224,7 +1259,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				break
 			}
 		}
-		s.cache.setSessionAliases(authID, bindingProvider, primaryID, keys...)
+		s.cache.setSessionAliases(authID, bindingProvider, primaryID, isSubagent, keys...)
 	}
 
 	if cachedAuthID, ok := s.cache.GetAndRefresh(cacheKey); ok {
@@ -1236,7 +1271,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 			}
 		}
 		// Cached auth not available, reselect via fallback selector for even distribution
-		auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+		auth, err := s.fallback.Pick(ctx, provider, model, opts, coldFallbackAuths)
 		if err != nil {
 			return nil, err
 		}
@@ -1292,7 +1327,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 				}
 			}
 			if !isSubagent && !isFork && s.shouldPreserveBindingWhenUnavailable(ctx, availabilityCandidates, model, cachedAuthID, now) {
-				auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+				auth, err := s.fallback.Pick(ctx, provider, model, opts, coldFallbackAuths)
 				if err != nil {
 					return nil, err
 				}
@@ -1306,7 +1341,7 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		}
 	}
 
-	auth, err := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	auth, err := s.fallback.Pick(ctx, provider, model, opts, coldFallbackAuths)
 	if err != nil {
 		return nil, err
 	}
@@ -1403,7 +1438,7 @@ func (s *SessionAffinitySelector) pickLCP(ctx context.Context, provider, model s
 	}
 
 	fallbackAuths := highestPriorityAuths(available)
-	auth, errPick := s.fallback.Pick(ctx, provider, model, opts, fallbackAuths)
+	auth, errPick := s.fallback.Pick(ctx, provider, model, opts, s.capFilteredAuths(fallbackAuths))
 	if errPick != nil {
 		return nil, true, errPick
 	}

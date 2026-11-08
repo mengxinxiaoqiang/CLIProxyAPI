@@ -561,6 +561,14 @@ type RoutingConfig struct {
 	//     auth errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
 	// Ignored when SessionAffinity is false.
 	SessionAffinityRebindOn string `yaml:"session-affinity-rebind-on,omitempty" json:"session-affinity-rebind-on,omitempty"`
+
+	// SessionAffinityMaxSessionsPerAuth caps how many distinct root sessions may be bound to
+	// one credential at the same time. New sessions skip credentials that already reached the
+	// cap; existing bindings are never evicted, so a saturated credential drains as its
+	// sessions expire or fail over. Subagent sessions inherit their parent binding and do not
+	// count against the cap. 0 (default) disables the cap.
+	// Ignored when SessionAffinity is false.
+	SessionAffinityMaxSessionsPerAuth int `yaml:"session-affinity-max-sessions-per-auth,omitempty" json:"session-affinity-max-sessions-per-auth,omitempty"`
 }
 
 // OAuthModelAlias defines a model ID alias for a specific channel.

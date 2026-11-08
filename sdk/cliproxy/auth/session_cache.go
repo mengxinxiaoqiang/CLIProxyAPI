@@ -17,6 +17,9 @@ type sessionBinding struct {
 	sessionID string
 	provider  string
 	sequence  uint64
+	// subagent marks a child session that inherits its parent's credential.
+	// Subagent groups are excluded from per-credential session caps.
+	subagent bool
 }
 
 // sessionEntry stores an auth binding, its identifier aliases, and expiration.
@@ -39,7 +42,10 @@ type SessionCache struct {
 	stopCh           chan struct{}
 	stopOnce         sync.Once
 	sessionGroups    map[string]map[string]struct{}
-	bindingSequence  uint64
+	// authGroups indexes live primary group keys per auth so per-credential session
+	// counts do not require a full scan on the selection hot path.
+	authGroups      map[string]map[string]struct{}
+	bindingSequence uint64
 }
 
 // NewSessionCache creates a cache with the specified TTL.
@@ -72,6 +78,9 @@ func NewSessionCacheWithCapacity(ttl time.Duration, maxEntries int) *SessionCach
 func (c *SessionCache) ensureInitializedLocked() {
 	if c.sessionGroups == nil {
 		c.sessionGroups = make(map[string]map[string]struct{})
+	}
+	if c.authGroups == nil {
+		c.authGroups = make(map[string]map[string]struct{})
 	}
 	if c.entries == nil {
 		c.entries = make(map[string]sessionEntry)
@@ -159,8 +168,8 @@ func (c *SessionCache) SetAliases(authID string, sessionIDs ...string) {
 
 // setSessionAliases records a real selection, including reuse of an existing binding.
 // Result-driven Touch calls preserve this order rather than becoming new selections.
-func (c *SessionCache) setSessionAliases(authID, provider, sessionID string, keys ...string) {
-	c.setAliases(authID, sessionBinding{sessionID: sessionID, provider: provider}, keys...)
+func (c *SessionCache) setSessionAliases(authID, provider, sessionID string, subagent bool, keys ...string) {
+	c.setAliases(authID, sessionBinding{sessionID: sessionID, provider: provider, subagent: subagent}, keys...)
 }
 
 func (c *SessionCache) setAliases(authID string, binding sessionBinding, sessionIDs ...string) {
@@ -216,6 +225,10 @@ func (c *SessionCache) replaceAliasGroupsLocked(authID string, expiresAt time.Ti
 	}
 	entry := sessionEntry{authID: authID, expiresAt: expiresAt, aliases: append([]string(nil), aliases...), binding: binding}
 	c.groups[primaryKey] = entry
+	if c.authGroups[authID] == nil {
+		c.authGroups[authID] = make(map[string]struct{})
+	}
+	c.authGroups[authID][primaryKey] = struct{}{}
 	if binding.sequence != 0 {
 		if c.sessionGroups[binding.sessionID] == nil {
 			c.sessionGroups[binding.sessionID] = make(map[string]struct{})
@@ -255,6 +268,12 @@ func (c *SessionCache) removeAliasGroupLocked(entry sessionEntry) {
 	primaryKey := entry.aliases[0]
 	if currentGroup, ok := c.groups[primaryKey]; ok && sameSessionEntryGroup(currentGroup, entry) {
 		delete(c.groups, primaryKey)
+		if groups := c.authGroups[entry.authID]; groups != nil {
+			delete(groups, primaryKey)
+			if len(groups) == 0 {
+				delete(c.authGroups, entry.authID)
+			}
+		}
 		if groups := c.sessionGroups[entry.binding.sessionID]; groups != nil {
 			delete(groups, primaryKey)
 			if len(groups) == 0 {
@@ -489,6 +508,49 @@ func (c *SessionCache) cleanupLoop() {
 			c.cleanup()
 		}
 	}
+}
+
+// ActiveCount returns how many live session groups are currently bound to authID.
+// Expired groups are pruned from the per-auth index as they are observed.
+func (c *SessionCache) ActiveCount(authID string) int {
+	if c == nil || authID == "" {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ensureInitializedLocked()
+	groups := c.authGroups[authID]
+	if len(groups) == 0 {
+		return 0
+	}
+	now := time.Now()
+	seen := make(map[string]struct{}, len(groups))
+	expired := make([]string, 0)
+	for primaryKey := range groups {
+		entry, ok := c.groups[primaryKey]
+		if !ok || entry.authID != authID || !now.Before(entry.expiresAt) {
+			expired = append(expired, primaryKey)
+			continue
+		}
+		if entry.binding.subagent {
+			// Subagents inherit a parent credential; they are not separate sessions.
+			continue
+		}
+		// One conversation may hold several groups (one per model); count it once.
+		sessionKey := strings.TrimSpace(entry.binding.sessionID)
+		if sessionKey == "" {
+			sessionKey = primaryKey
+		}
+		seen[sessionKey] = struct{}{}
+	}
+	count := len(seen)
+	for _, primaryKey := range expired {
+		delete(groups, primaryKey)
+	}
+	if len(groups) == 0 {
+		delete(c.authGroups, authID)
+	}
+	return count
 }
 
 // Len returns the current count of tracked session aliases.

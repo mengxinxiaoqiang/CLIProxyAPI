@@ -56,11 +56,12 @@ type configCommit struct {
 }
 
 type routingRuntimeState struct {
-	strategy                 string
-	sessionAffinity          bool
-	sessionAffinityTTL       time.Duration
-	sessionAffinitySubagents bool
-	sessionAffinityRebindOn  string
+	strategy                   string
+	sessionAffinity            bool
+	sessionAffinityTTL         time.Duration
+	sessionAffinitySubagents   bool
+	sessionAffinityRebindOn    string
+	sessionAffinityMaxSessions int
 }
 
 func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
@@ -95,6 +96,9 @@ func normalizedRoutingRuntimeState(cfg *config.Config) routingRuntimeState {
 	if state.sessionAffinity && strings.EqualFold(strings.TrimSpace(cfg.Routing.SessionAffinityRebindOn), coreauth.SessionAffinityRebindOnQuota) {
 		state.sessionAffinityRebindOn = coreauth.SessionAffinityRebindOnQuota
 	}
+	if state.sessionAffinity && cfg.Routing.SessionAffinityMaxSessionsPerAuth > 0 {
+		state.sessionAffinityMaxSessions = cfg.Routing.SessionAffinityMaxSessionsPerAuth
+	}
 	return state
 }
 
@@ -111,10 +115,11 @@ func newRoutingSelector(state routingRuntimeState) coreauth.Selector {
 	if state.sessionAffinity {
 		subagents := state.sessionAffinitySubagents
 		selector = coreauth.NewSessionAffinitySelectorWithConfig(coreauth.SessionAffinityConfig{
-			Fallback:         selector,
-			TTL:              state.sessionAffinityTTL,
-			SubagentAffinity: &subagents,
-			RebindOn:         state.sessionAffinityRebindOn,
+			Fallback:           selector,
+			TTL:                state.sessionAffinityTTL,
+			MaxSessionsPerAuth: state.sessionAffinityMaxSessions,
+			SubagentAffinity:   &subagents,
+			RebindOn:           state.sessionAffinityRebindOn,
 		})
 	}
 	return selector

@@ -200,6 +200,14 @@ routing:
   #     errors (429, 401/402/403, 404/model support, invalid_grant) rebind as normal.
   # Ignored when routing.session-affinity is false.
   session-affinity-rebind-on: "any"
+  # Caps how many distinct root sessions may be bound to one credential at the same time.
+  # New sessions skip credentials that already reached the cap; existing bindings are never
+  # evicted (a saturated credential drains as its sessions expire or fail over), and subagent
+  # sessions inherit the parent binding without counting. 0 disables the cap.
+  # Example: 5 users with 3+ credentials and a cap of 2 keeps any single account from hosting
+  # more than two concurrent conversations.
+  # Ignored when routing.session-affinity is false.
+  session-affinity-max-sessions-per-auth: 0
 
   # When true, unprefixed model requests only use credentials without a prefix (except when prefix == model name).
   force-model-prefix: false
