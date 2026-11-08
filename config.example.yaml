@@ -206,6 +206,9 @@ routing:
   # sessions inherit the parent binding without counting. 0 disables the cap.
   # Example: 5 users with 3+ credentials and a cap of 2 keeps any single account from hosting
   # more than two concurrent conversations.
+  # Per-credential overrides: set api-keys.codex[].session-cap, or add
+  # "session_cap" to an auth JSON file (0 disables the cap for that credential,
+  # omit to inherit this global value).
   # Ignored when routing.session-affinity is false.
   session-affinity-max-sessions-per-auth: 0
 
@@ -710,6 +713,7 @@ upstream:
 #           match:
 #             - "context_window_exceeded"
 #           action: "stop-and-cooldown"
+#       session-cap: 1 # optional: override routing.session-affinity-max-sessions-per-auth for this credential; 0 disables the cap; omit to inherit global
 #       base-url: "https://www.example.com" # use the custom codex API endpoint
 #       headers:
 #         X-Custom-Header: "custom-value"

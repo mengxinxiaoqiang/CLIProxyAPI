@@ -1120,11 +1120,12 @@ func NewSessionAffinitySelectorWithConfig(cfg SessionAffinityConfig) *SessionAff
 	}
 }
 
-// capFilteredAuths drops credentials whose live session count reached the configured cap.
-// It returns the input unchanged when the cap is disabled or when every candidate is
-// saturated, so a capped pool degrades to normal selection instead of failing requests.
+// capFilteredAuths drops credentials whose live session count reached their cap.
+// The cap is the credential's own override when present, otherwise the global value.
+// It returns the input unchanged when every candidate is saturated, so a capped pool
+// degrades to normal selection instead of failing requests.
 func (s *SessionAffinitySelector) capFilteredAuths(auths []*Auth) []*Auth {
-	if s == nil || s.cache == nil || s.maxSessionsPerAuth <= 0 || len(auths) == 0 {
+	if s == nil || s.cache == nil || len(auths) == 0 {
 		return auths
 	}
 	under := make([]*Auth, 0, len(auths))
@@ -1132,7 +1133,8 @@ func (s *SessionAffinitySelector) capFilteredAuths(auths []*Auth) []*Auth {
 		if auth == nil {
 			continue
 		}
-		if s.cache.ActiveCount(auth.ID) < s.maxSessionsPerAuth {
+		limit := s.maxSessionsForAuth(auth)
+		if limit <= 0 || s.cache.ActiveCount(auth.ID) < limit {
 			under = append(under, auth)
 		}
 	}
@@ -1140,6 +1142,83 @@ func (s *SessionAffinitySelector) capFilteredAuths(auths []*Auth) []*Auth {
 		return auths
 	}
 	return under
+}
+
+// maxSessionsForAuth resolves the session cap for one credential. A credential
+// override (attribute or auth-file metadata) wins; otherwise the global value applies.
+func (s *SessionAffinitySelector) maxSessionsForAuth(auth *Auth) int {
+	if auth == nil {
+		return 0
+	}
+	if limit, ok := credentialSessionCap(auth); ok {
+		return limit
+	}
+	if s == nil {
+		return 0
+	}
+	return s.maxSessionsPerAuth
+}
+
+// credentialSessionCap reads an operator-provided per-credential session cap.
+// Recognized keys: "session_cap" (attribute or metadata), plus "max_sessions" and
+// "session-cap" metadata aliases. Negative values are treated as 0 (unlimited).
+func credentialSessionCap(auth *Auth) (int, bool) {
+	if auth == nil {
+		return 0, false
+	}
+	for _, key := range []string{AttributeSessionCap, "max_sessions", "session-cap"} {
+		if raw := authAttribute(auth, key); raw != "" {
+			if value, ok := parseSessionCap(raw); ok {
+				return value, true
+			}
+		}
+		if raw, ok := auth.Metadata[key]; ok {
+			if value, ok := parseSessionCapValue(raw); ok {
+				return value, true
+			}
+		}
+	}
+	return 0, false
+}
+
+func parseSessionCap(raw string) (int, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return 0, false
+	}
+	value, errParse := strconv.Atoi(trimmed)
+	if errParse != nil {
+		return 0, false
+	}
+	return normalizeSessionCap(value), true
+}
+
+func parseSessionCapValue(raw any) (int, bool) {
+	switch value := raw.(type) {
+	case int:
+		return normalizeSessionCap(value), true
+	case int64:
+		return normalizeSessionCap(int(value)), true
+	case float64:
+		return normalizeSessionCap(int(value)), true
+	case json.Number:
+		parsed, errParse := value.Int64()
+		if errParse != nil {
+			return 0, false
+		}
+		return normalizeSessionCap(int(parsed)), true
+	case string:
+		return parseSessionCap(value)
+	default:
+		return 0, false
+	}
+}
+
+func normalizeSessionCap(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 // Trees returns a backward-compatible in-memory session tree store.

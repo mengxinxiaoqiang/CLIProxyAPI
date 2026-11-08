@@ -97,3 +97,52 @@ func TestSessionAffinityMaxSessionsPerAuthDisabled(t *testing.T) {
 		t.Fatalf("bound %d sessions, want 8", total)
 	}
 }
+func TestSessionAffinityPerCredentialSessionCap(t *testing.T) {
+	selector := newCapTestSelector(t, 3)
+	auths := []*Auth{
+		{ID: "auth-a", Provider: "codex", Status: StatusActive, Attributes: map[string]string{AttributeSessionCap: "1"}},
+		{ID: "auth-b", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"session_cap": float64(2)}},
+		{ID: "auth-c", Provider: "codex", Status: StatusActive},
+	}
+	for _, auth := range auths {
+		auth.EnsureIndex()
+	}
+
+	for index := 0; index < 6; index++ {
+		_ = pickCappedSession(t, selector, auths, fmt.Sprintf("sess-%d", index))
+	}
+
+	if got := selector.cache.ActiveCount("auth-a"); got > 1 {
+		t.Fatalf("auth-a hosts %d sessions, want <= 1", got)
+	}
+	if got := selector.cache.ActiveCount("auth-b"); got > 2 {
+		t.Fatalf("auth-b hosts %d sessions, want <= 2", got)
+	}
+	if got := selector.cache.ActiveCount("auth-c"); got > 3 {
+		t.Fatalf("auth-c hosts %d sessions, want <= 3", got)
+	}
+	if total := selector.cache.ActiveCount("auth-a") + selector.cache.ActiveCount("auth-b") + selector.cache.ActiveCount("auth-c"); total != 6 {
+		t.Fatalf("bound %d sessions, want 6", total)
+	}
+}
+
+func TestSessionAffinityZeroCapDisablesOverride(t *testing.T) {
+	selector := newCapTestSelector(t, 1)
+	auths := []*Auth{
+		{ID: "auth-small", Provider: "codex", Status: StatusActive},
+		{ID: "auth-unlimited", Provider: "codex", Status: StatusActive, Metadata: map[string]any{"session_cap": 0}},
+	}
+	for _, auth := range auths {
+		auth.EnsureIndex()
+	}
+
+	for index := 0; index < 4; index++ {
+		_ = pickCappedSession(t, selector, auths, fmt.Sprintf("sess-%d", index))
+	}
+	if got := selector.cache.ActiveCount("auth-small"); got > 1 {
+		t.Fatalf("auth-small hosts %d sessions, want <= 1", got)
+	}
+	if got := selector.cache.ActiveCount("auth-unlimited"); got < 2 {
+		t.Fatalf("auth-unlimited hosts %d sessions, want sessions to overflow onto it", got)
+	}
+}

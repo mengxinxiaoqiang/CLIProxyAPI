@@ -866,6 +866,11 @@ type CodexKey struct {
 	// AlphaSearch allows this Codex API key to serve the Alpha Search endpoint.
 	AlphaSearch bool `yaml:"alpha-search,omitempty" json:"alpha-search,omitempty"`
 
+	// SessionCap overrides routing.session-affinity-max-sessions-per-auth for this credential.
+	// Nil inherits the global value, 0 disables the cap for this credential, and a positive
+	// value limits how many distinct root sessions may be bound to it.
+	SessionCap *int `yaml:"session-cap,omitempty" json:"session-cap,omitempty"`
+
 	// ProxyURL overrides the global proxy setting for this API key if provided.
 	ProxyURL string `yaml:"proxy-url" json:"proxy-url"`
 
