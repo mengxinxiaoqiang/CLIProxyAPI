@@ -146,3 +146,50 @@ func TestSessionAffinityZeroCapDisablesOverride(t *testing.T) {
 		t.Fatalf("auth-unlimited hosts %d sessions, want sessions to overflow onto it", got)
 	}
 }
+func pickSessionWithHeaders(t *testing.T, selector *SessionAffinitySelector, auths []*Auth, headers map[string][]string) *Auth {
+	t.Helper()
+	opts := cliproxyexecutor.Options{Headers: headers, Metadata: map[string]any{}}
+	auth, errPick := selector.Pick(context.Background(), "codex", "gpt-5-codex", opts, auths)
+	if errPick != nil {
+		t.Fatalf("pick: %v", errPick)
+	}
+	if auth == nil {
+		t.Fatal("pick returned nil auth")
+	}
+	return auth
+}
+
+func TestSessionAffinitySubagentsShareParentSlot(t *testing.T) {
+	selector := newCapTestSelector(t, 1)
+	auths := capTestAuths()
+
+	parentHeaders := func(sessionID string) map[string][]string {
+		return map[string][]string{"Session-Id": {sessionID}}
+	}
+	parentAuth := pickSessionWithHeaders(t, selector, auths, parentHeaders("parent-1"))
+	if got := selector.cache.ActiveCount(parentAuth.ID); got != 1 {
+		t.Fatalf("parent slot count = %d, want 1", got)
+	}
+
+	// Three concurrent subagents of the same parent session.
+	for index := 0; index < 3; index++ {
+		headers := map[string][]string{
+			"Session-Id":               {fmt.Sprintf("child-%d", index)},
+			"X-Openai-Subagent":        {"collab_spawn"},
+			"x-codex-parent-thread-id": {"parent-1"},
+		}
+		childAuth := pickSessionWithHeaders(t, selector, auths, headers)
+		if childAuth.ID != parentAuth.ID {
+			t.Fatalf("subagent %d bound to %s, want parent credential %s", index, childAuth.ID, parentAuth.ID)
+		}
+	}
+	if got := selector.cache.ActiveCount(parentAuth.ID); got != 1 {
+		t.Fatalf("subagents consumed slots: count = %d, want 1", got)
+	}
+
+	// A different user must land on another credential because the parent's is full.
+	otherAuth := pickSessionWithHeaders(t, selector, auths, parentHeaders("parent-2"))
+	if otherAuth.ID == parentAuth.ID {
+		t.Fatalf("second parent bound to full credential %s", parentAuth.ID)
+	}
+}
