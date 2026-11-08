@@ -933,3 +933,33 @@ func TestV8SecretHashResolvesReferences(t *testing.T) {
 		})
 	}
 }
+func TestV8SessionCapInheritance(t *testing.T) {
+	raw := `api-keys:
+  codex:
+    - name: caps
+      base-url: https://example.invalid
+      session-cap: 3
+      keys:
+        - api-key: inherited
+        - api-key: overridden
+          session-cap: 1
+        - api-key: unlimited
+          session-cap: 0
+`
+	cfg, err := ParseConfigBytes([]byte(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.CodexKey) != 3 {
+		t.Fatalf("codex keys = %d, want 3", len(cfg.CodexKey))
+	}
+	want := []int{3, 1, 0}
+	for index, entry := range cfg.CodexKey {
+		if entry.SessionCap == nil {
+			t.Fatalf("codex keys[%d] session-cap missing", index)
+		}
+		if *entry.SessionCap != want[index] {
+			t.Fatalf("codex keys[%d] session-cap = %d, want %d", index, *entry.SessionCap, want[index])
+		}
+	}
+}

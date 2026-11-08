@@ -713,7 +713,6 @@ upstream:
 #           match:
 #             - "context_window_exceeded"
 #           action: "stop-and-cooldown"
-#       session-cap: 1 # optional: override routing.session-affinity-max-sessions-per-auth for this credential; 0 disables the cap; omit to inherit global
 #       base-url: "https://www.example.com" # use the custom codex API endpoint
 #       headers:
 #         X-Custom-Header: "custom-value"
@@ -755,6 +754,7 @@ upstream:
 #       keys:
 #         - api-key: "sk-atSM..."
 #           weight: 5 # optional: weighted-round-robin share; omitted defaults to 1; maximum 1,000,000
+#           session-cap: 1 # optional: max root sessions bound to this key; 0 disables the cap for it; omit to inherit routing.session-affinity-max-sessions-per-auth
 #           # connection-pool:                # optional: per-key override of the group pool setting
 #           #   enabled: false                # opt this key out while the group stays pooled
 #           disable-codex-cloaking: false # optional: true disables cloaking; OAuth provider settings do not apply here
